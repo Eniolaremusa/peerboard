@@ -1,1 +1,34 @@
 @import "tailwindcss";
+
+html,
+body {
+  height: 100%;
+}
+
+.peerboard .excalidraw {
+  /* brand */
+  --color-primary: #83C4EA;
+  --color-brand-hover: #D0E7F0;
+  --color-brand-active: #277FB2;
+  --color-surface-primary-container: #83C4EA;
+
+  /* surfaces */
+  --color-surface-lowest: #ffffff;
+  --color-surface-low: #F9FAFA;
+  --color-surface-high: #E8ECEF;
+  --island-bg-color: #ffffff;
+
+  /* text and icons */
+  --color-on-surface: #1B1D20;
+
+  /* borders */
+  --color-border-outline: #C5CDD0;
+  --color-border-outline-variant: #DDE3E5;
+
+  /* sliders */
+  --color-slider-track: #D0E7F0;
+}
+
+.peerboard .excalidraw .range-input {
+  opacity: 1;
+}
