@@ -1,9 +1,12 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useState } from "react";
-import { sessionConfig, sessionDurationMs } from "@/config/session";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { prompts } from "@/config/prompts";
+import { sessionDurationMs } from "@/config/session";
 import "@excalidraw/excalidraw/index.css";
+
+const activePrompt = prompts[0];
 
 const Excalidraw = dynamic(
   async () => (await import("@excalidraw/excalidraw")).Excalidraw,
@@ -63,6 +66,105 @@ function Countdown({
   );
 }
 
+type Turn = {
+  question: string;
+  answer: string;
+};
+
+function ClarifyingQuestions() {
+  const [question, setQuestion] = useState("");
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [revealedFactIds, setRevealedFactIds] = useState<string[]>([]);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const nextQuestion = question.trim();
+    if (!nextQuestion || pending) {
+      return;
+    }
+
+    setPending(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/clarify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          promptId: activePrompt.id,
+          question: nextQuestion,
+          revealedFactIds,
+        }),
+      });
+      const payload = (await response.json()) as {
+        answer?: string;
+        revealedFactIds?: string[];
+        error?: string;
+      };
+      if (!response.ok || !payload.answer) {
+        throw new Error(payload.error ?? "Could not get an answer");
+      }
+
+      setTurns((current) => [
+        ...current,
+        { question: nextQuestion, answer: payload.answer as string },
+      ]);
+      setRevealedFactIds((current) => {
+        const next = new Set(current);
+        for (const id of payload.revealedFactIds ?? []) {
+          next.add(id);
+        }
+        return [...next];
+      });
+      setQuestion("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not get an answer");
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div className="flex max-h-48 shrink-0 flex-col border-t border-neutral-200 bg-white">
+      {turns.length > 0 ? (
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+          {turns.map((turn, index) => (
+            <div key={index} className="not-last:mb-3">
+              <p className="text-sm text-neutral-500">{turn.question}</p>
+              <p className="mt-1 text-sm leading-6 text-neutral-800">{turn.answer}</p>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {error ? (
+        <p className="px-5 py-2 text-sm text-red-700">{error}</p>
+      ) : null}
+      <form
+        onSubmit={submit}
+        className="flex shrink-0 items-center gap-3 border-t border-neutral-200 px-5 py-2.5"
+      >
+        <input
+          type="text"
+          value={question}
+          onChange={(event) => setQuestion(event.target.value)}
+          disabled={pending}
+          placeholder="Ask a clarifying question"
+          className="min-w-0 flex-1 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-900 outline-none placeholder:text-neutral-400 focus-visible:border-neutral-500"
+        />
+        <button
+          type="submit"
+          disabled={pending || question.trim() === ""}
+          className="shrink-0 rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {pending ? "Asking…" : "Ask"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 export default function WhiteboardSession() {
   const [status, setStatus] = useState<SessionStatus>("idle");
   const [endsAt, setEndsAt] = useState<string | null>(null);
@@ -94,7 +196,7 @@ export default function WhiteboardSession() {
             className="flex w-full items-center gap-2 text-left"
           >
             <span className="min-w-0 flex-1 truncate text-sm leading-5 text-neutral-700">
-              {sessionConfig.prompt}
+              {activePrompt.brief}
             </span>
             <span
               aria-hidden="true"
@@ -107,7 +209,7 @@ export default function WhiteboardSession() {
           </button>
           {promptOpen ? (
             <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-30 rounded-lg border border-neutral-200 bg-white p-3 text-sm leading-6 text-neutral-800 shadow-[0_8px_24px_oklch(0_0_0/0.08)]">
-              {sessionConfig.prompt}
+              {activePrompt.brief}
             </div>
           ) : null}
         </div>
@@ -131,14 +233,17 @@ export default function WhiteboardSession() {
         )}
       </header>
 
-      <main className="min-h-0 flex-1">
+      <main className="flex min-h-0 flex-1 flex-col">
         {running ? (
-          <div className="peerboard h-full w-full">
-            <Excalidraw
-              aiEnabled={false}
-              initialData={{ appState: { viewBackgroundColor: "#FFFFFF" } }}
-            />
-          </div>
+          <>
+            <div className="peerboard min-h-0 w-full flex-1">
+              <Excalidraw
+                aiEnabled={false}
+                initialData={{ appState: { viewBackgroundColor: "#FFFFFF" } }}
+              />
+            </div>
+            <ClarifyingQuestions />
+          </>
         ) : (
           <div className="flex h-full items-center justify-center">
             <p className="text-sm text-neutral-500">
