@@ -1,8 +1,8 @@
-import { prompts } from "@/config/prompts";
+import { getPrompt, type Prompt } from "@/config/prompts";
 import { rubric } from "@/config/rubric";
 import { generateReply, ModelError, modelFailureReason, parseJsonObject, stubEvaluate } from "@/lib/model";
 
-export const maxDuration = 90;
+export const maxDuration = 120;
 
 type TranscriptLine = {
   atMs?: number;
@@ -65,7 +65,7 @@ function parseWritten(text: string): WrittenEvaluation | null {
   };
 }
 
-function buildSystemPrompt(prompt: (typeof prompts)[number]) {
+function buildSystemPrompt(prompt: Prompt) {
   const factList = prompt.facts
     .map(
       (fact) =>
@@ -97,10 +97,9 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const prompt =
-    prompts.find((item) => item.id === body.promptId) ?? prompts[0];
+  const prompt = getPrompt(body.promptId);
   if (!prompt) {
-    return Response.json({ error: "No prompt configured" }, { status: 500 });
+    return Response.json({ error: "Unknown prompt" }, { status: 400 });
   }
 
   const knownIds = new Set(prompt.facts.map((fact) => fact.id));
@@ -152,6 +151,7 @@ export async function POST(request: Request) {
   ];
 
   const payload = {
+    promptId: prompt.id,
     revealedFactIds,
     turns,
     transcript,
@@ -175,6 +175,7 @@ export async function POST(request: Request) {
       sessionJson,
       "evaluate",
       media,
+      prompt.id,
     );
     text = reply.text;
     ran = reply.ran;

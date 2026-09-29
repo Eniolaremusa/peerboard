@@ -6,8 +6,6 @@ import { prompts } from "@/config/prompts";
 import { formatClock, sessionConfig, sessionDurationMs } from "@/config/session";
 import "@excalidraw/excalidraw/index.css";
 
-const activePrompt = prompts[0];
-
 const Excalidraw = dynamic(
   async () => (await import("@excalidraw/excalidraw")).Excalidraw,
   { ssr: false },
@@ -307,10 +305,56 @@ function Countdown({
   );
 }
 
+function PromptPicker({
+  selectedId,
+  onSelect,
+}: {
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div className="flex h-full justify-center overflow-y-auto px-8 py-10">
+      <div className="w-full max-w-2xl">
+        <h1 className="text-xl font-medium tracking-tight text-neutral-900">
+          Choose a prompt
+        </h1>
+        <ul className="mt-8 space-y-3">
+          {prompts.map((prompt) => {
+            const selected = prompt.id === selectedId;
+            return (
+              <li key={prompt.id}>
+                <button
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => onSelect(prompt.id)}
+                  className={`w-full rounded-lg border px-4 py-3.5 text-left transition-[border-color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96] ${
+                    selected
+                      ? "border-neutral-900 bg-white"
+                      : "border-neutral-200 bg-white"
+                  }`}
+                >
+                  <p className="text-sm font-medium text-neutral-900">
+                    {prompt.title}
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-neutral-600">
+                    {prompt.brief}
+                  </p>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function ClarifyingQuestions({
+  promptId,
   revealedFactIds,
   onTurn,
 }: {
+  promptId: string;
   revealedFactIds: string[];
   onTurn: (turn: Turn, revealedFactIds: string[]) => void;
 }) {
@@ -333,7 +377,7 @@ function ClarifyingQuestions({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          promptId: activePrompt.id,
+          promptId,
           question: nextQuestion,
           revealedFactIds,
         }),
@@ -539,6 +583,7 @@ function SessionReport({
 
 export default function WhiteboardSession() {
   const [status, setStatus] = useState<SessionStatus>("idle");
+  const [promptId, setPromptId] = useState<string | null>(null);
   const [endsAt, setEndsAt] = useState<string | null>(null);
   const [promptOpen, setPromptOpen] = useState(false);
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -670,6 +715,9 @@ export default function WhiteboardSession() {
     if (finishingRef.current) {
       return;
     }
+    if (!promptId) {
+      return;
+    }
     finishingRef.current = true;
     listeningRef.current = false;
     const recording = await stopMicRef.current();
@@ -712,7 +760,7 @@ export default function WhiteboardSession() {
     );
 
     const evaluateBody: EvaluateBody = {
-      promptId: activePrompt.id,
+      promptId,
       revealedFactIds,
       turns,
       transcript: transcriptRef.current,
@@ -747,10 +795,10 @@ export default function WhiteboardSession() {
     } finally {
       setStatus("report");
     }
-  }, [captureBoard, revealedFactIds, requestEvaluation, turns]);
+  }, [captureBoard, promptId, revealedFactIds, requestEvaluation, turns]);
 
   const startSession = async () => {
-    if (status !== "idle") {
+    if (status !== "idle" || !promptId) {
       return;
     }
     finishingRef.current = false;
@@ -1147,7 +1195,8 @@ export default function WhiteboardSession() {
   }, [captureBoard, status]);
 
   const running = status === "active";
-  const headerPrompt = activePrompt.brief;
+  const selectedPrompt = prompts.find((item) => item.id === promptId);
+  const headerPrompt = selectedPrompt?.brief ?? "";
 
   return (
     <div className="flex h-dvh flex-col bg-neutral-50">
@@ -1161,6 +1210,8 @@ export default function WhiteboardSession() {
         ) : null}
 
         <div className="relative min-w-0 flex-1">
+          {headerPrompt ? (
+            <>
           <button
             type="button"
             aria-expanded={promptOpen}
@@ -1184,6 +1235,8 @@ export default function WhiteboardSession() {
               {headerPrompt}
             </div>
           ) : null}
+            </>
+          ) : null}
         </div>
 
         {running ? (
@@ -1198,7 +1251,8 @@ export default function WhiteboardSession() {
           <button
             type="button"
             onClick={startSession}
-            className="shrink-0 rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96]"
+            disabled={!promptId}
+            className="shrink-0 rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
           >
             Start session
           </button>
@@ -1206,7 +1260,7 @@ export default function WhiteboardSession() {
       </header>
 
       <main className="flex min-h-0 flex-1 flex-col">
-        {running ? (
+        {running && promptId ? (
           <>
             <div className="peerboard min-h-0 w-full flex-1">
               <Excalidraw
@@ -1233,6 +1287,7 @@ export default function WhiteboardSession() {
               </div>
             ) : null}
             <ClarifyingQuestions
+              promptId={promptId}
               revealedFactIds={revealedFactIds}
               onTurn={(turn, nextIds) => {
                 setTurns((current) => [...current, turn]);
@@ -1255,11 +1310,7 @@ export default function WhiteboardSession() {
             onRestart={resetSession}
           />
         ) : (
-          <div className="flex h-full items-center justify-center">
-            <p className="text-sm text-neutral-500">
-              Start a session to open the whiteboard.
-            </p>
-          </div>
+          <PromptPicker selectedId={promptId} onSelect={setPromptId} />
         )}
       </main>
     </div>

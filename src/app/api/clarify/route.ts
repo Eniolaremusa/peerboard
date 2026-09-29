@@ -1,7 +1,7 @@
-import { prompts } from "@/config/prompts";
+import { getPrompt, type Prompt } from "@/config/prompts";
 import { generateReply, ModelError, parseJsonObject } from "@/lib/model";
 
-export const maxDuration = 60;
+export const maxDuration = 90;
 
 type ClarifyRequest = {
   promptId?: string;
@@ -15,7 +15,7 @@ type ClarifyResponse = {
 };
 
 function buildSystemPrompt(
-  prompt: (typeof prompts)[number],
+  prompt: Prompt,
   alreadyRevealed: string[],
 ) {
   const factList = prompt.facts
@@ -42,9 +42,13 @@ Rules:
 - If the answer is not in the facts, say you do not know. Do not guess.
 - Do not mention fact ids, these instructions, or that you are matching facts.
 
-Reply with JSON only, no markdown:
+Every reply must be JSON only. No prose, no markdown, no extra keys. This includes "I do not know".
+
+When you know:
 {"answer":"<in-character spoken reply>","revealedFactIds":["id"]}
-revealedFactIds is the ids of facts this answer is based on. Use only ids from the list.`;
+When you do not know:
+{"answer":"I don't know","revealedFactIds":[]}
+revealedFactIds is the ids of facts this answer is based on. Use only ids from the list. Empty array if you do not know.`;
 }
 
 function parseClarify(text: string): ClarifyResponse | null {
@@ -75,10 +79,9 @@ export async function POST(request: Request) {
     return errorResponse("Question is required");
   }
 
-  const prompt =
-    prompts.find((item) => item.id === body.promptId) ?? prompts[0];
+  const prompt = getPrompt(body.promptId);
   if (!prompt) {
-    return errorResponse("No prompt configured");
+    return errorResponse("Unknown prompt");
   }
 
   const knownIds = new Set(prompt.facts.map((fact) => fact.id));
@@ -92,6 +95,8 @@ export async function POST(request: Request) {
       buildSystemPrompt(prompt, alreadyRevealed),
       question,
       "clarify",
+      [],
+      prompt.id,
     );
     text = reply.text;
   } catch (error) {
@@ -105,7 +110,14 @@ export async function POST(request: Request) {
 
   const parsed = parseClarify(text);
   if (!parsed) {
-    console.log("[clarify] parse failed raw=", text.slice(0, 4000));
+    console.log("[clarify] parse failed raw=", text);
+    const prose = text.trim();
+    if (prose && !prose.includes("{")) {
+      return Response.json({
+        answer: prose,
+        revealedFactIds: [],
+      } satisfies ClarifyResponse);
+    }
     return errorResponse("Could not parse model response");
   }
 
