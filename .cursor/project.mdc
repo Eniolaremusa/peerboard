@@ -1,3 +1,60 @@
 ---
 alwaysApply: true
 ---
+---
+description: Project context and working rules
+alwaysApply: true
+---
+
+# Project
+
+A peer interview practice tool for designers. Two people book one session, take turns as interviewer and candidate on a shared whiteboard, and both get an AI report afterwards.
+
+Full spec in `docs/prd.md`. Build order in `docs/build-phases.md`. Read both before suggesting anything.
+
+# How we work
+
+- Build strictly one phase at a time, in the order given in build-phases.md.
+- Never scaffold ahead. No auth, no database, no video, no matching until their phase arrives.
+- Smallest working version first. I will ask for refinements after I have tried it.
+- If something seems missing, ask before adding it. Do not fill gaps by guessing.
+- When I describe a bug, ask to see the behaviour before rewriting code.
+
+# Stack
+
+- Next.js, App Router, TypeScript
+- Tailwind
+- Excalidraw, embedded, MIT licensed. Do not suggest tldraw, it needs a paid licence key in production.
+- Claude API for hidden brief answers and post-session reports
+- Postgres via Supabase, from phase 8 only
+- LiveKit or Daily for video, from phase 6 only
+- excalidraw-room for canvas sync, from phase 6 only
+
+# Code conventions
+
+- Functional components, hooks, no class components
+- Keep prompts, hidden briefs, fact lists and rubrics in config files, not inline in components
+- Server-side anything that touches an API key. Never expose keys client-side.
+- Store all times in UTC
+- Prefer a few clear files over many tiny ones
+
+# Git
+
+I am learning the git workflow on this project. So:
+
+- Explain any git command before running it, and prefer that I run it myself.
+- Do not commit, push, merge or create branches unless I ask.
+- One branch per phase, named like `phase-1-whiteboard-shell`.
+- Never commit directly to `main`.
+
+# Product rules that are easy to get wrong
+
+- The AI is silent during a session. It feeds cards to the interviewer's rail and writes the report afterwards. It never speaks to the candidate mid-round.
+- Candidate screen: full width video, two square cards at the bottom for Whiteboard and Notes, thin countdown overlay. Nothing else. Do not add controls for visual balance.
+- The whiteboard opens automatically at session start and the card toggles back to full video. It never starts hidden.
+- Notes are private to the candidate and never shown to the peer.
+- Interviewer rail is 30 percent, two tabs: Prompt and Evaluation. Cards pop over the rail regardless of the active tab and are dismissible. Nothing urgent should require a tab switch.
+- The hidden brief is revealed only in response to questions the candidate actually asks.
+- Do not grade the drawing itself. Canvas snapshots answer one narrow question: does the canvas match what they said they were doing.
+- The canvas is embedded. There is no screen sharing anywhere in this product.
+- Desktop only. Do not spend effort on mobile layouts.
