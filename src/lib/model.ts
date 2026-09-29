@@ -1,4 +1,4 @@
-import { prompts } from "@/config/prompts";
+import { getPrompt } from "@/config/prompts";
 import { formatClock } from "@/config/session";
 
 const GEMINI_API_URL =
@@ -58,8 +58,8 @@ function words(text: string) {
     .filter((word) => word.length > 2);
 }
 
-export function stubReply(question: string) {
-  const facts = prompts.flatMap((prompt) => prompt.facts);
+export function stubReply(question: string, promptId?: string) {
+  const facts = getPrompt(promptId)?.facts ?? [];
   const questionWords = words(question);
   let best:
     | { id: string; fact: string; score: number }
@@ -118,6 +118,7 @@ export function modelFailureReason(error: ModelError) {
 }
 
 export function stubEvaluate(user: string, reason?: string) {
+  let promptId: string | undefined;
   let revealedFactIds: string[] = [];
   let transcript: { atMs?: number; text?: string }[] = [];
   let talkMs = 0;
@@ -127,6 +128,7 @@ export function stubEvaluate(user: string, reason?: string) {
 
   try {
     const parsed = JSON.parse(user) as {
+      promptId?: string;
       revealedFactIds?: string[];
       transcript?: { atMs?: number; text?: string }[];
       talkMs?: number;
@@ -140,11 +142,12 @@ export function stubEvaluate(user: string, reason?: string) {
     boardMs = parsed.boardMs ?? 0;
     snapshotCount = parsed.snapshotCount ?? 0;
     hasSnapshot = Boolean(parsed.hasSnapshot);
+    promptId = parsed.promptId;
   } catch {
     revealedFactIds = [];
   }
 
-  const facts = prompts[0]?.facts ?? [];
+  const facts = getPrompt(promptId)?.facts ?? [];
   const revealed = new Set(revealedFactIds);
   const found = facts.filter((fact) => revealed.has(fact.id));
   const missed = facts.filter((fact) => !revealed.has(fact.id));
@@ -152,9 +155,9 @@ export function stubEvaluate(user: string, reason?: string) {
   const spokenAt = formatClock(spoken?.atMs ?? 0);
   const why = reason?.trim();
 
-  const framing = found.some((fact) => fact.id === "real-problem")
-    ? "You got to the real goal: cutting support load, not cutting returns."
-    : "You stayed with the framed problem (returns) and did not reach the real goal in the brief.";
+  const framing = found.some((fact) => fact.critical)
+    ? "You reached a critical fact in the brief."
+    : "You stayed with the framed problem and did not reach a critical fact in the brief.";
 
   const rewrittenMoment = spoken?.text
     ? {
@@ -226,9 +229,27 @@ function readGeminiText(payload: GeminiPayload) {
   }
   const modelParts = payload.candidates?.[0]?.content?.parts ?? [];
   const visible = modelParts.filter((part) => !part.thought && part.text);
-  return (visible.length > 0 ? visible : modelParts)
-    .map((part) => part.text ?? "")
-    .join("");
+  const withJson = visible.filter((part) => part.text?.includes("{"));
+  const chosen =
+    withJson.length > 0 ? withJson : visible.length > 0 ? visible : modelParts;
+  return chosen.map((part) => part.text ?? "").join("");
+}
+
+const RETRY_429_MS = [5000, 15000, 30000];
+const RETRY_EVAL_MS = [1000, 2000, 4000];
+
+function retryWaitMs(
+  kind: GenerateKind,
+  status: number | undefined,
+  retryIndex: number,
+) {
+  if (status === 429) {
+    return RETRY_429_MS[retryIndex] ?? RETRY_429_MS[RETRY_429_MS.length - 1];
+  }
+  if (kind === "clarify") {
+    return 600;
+  }
+  return RETRY_EVAL_MS[retryIndex] ?? RETRY_EVAL_MS[RETRY_EVAL_MS.length - 1];
 }
 
 export async function generateReply(
@@ -236,6 +257,7 @@ export async function generateReply(
   user: string,
   kind: GenerateKind = "clarify",
   images: ModelImage[] = [],
+  promptId?: string,
 ): Promise<{ text: string; ran: "gemini" | "stub" }> {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
@@ -244,7 +266,7 @@ export async function generateReply(
       text:
         kind === "evaluate"
           ? stubEvaluate(user, "missing Gemini API key")
-          : stubReply(user),
+          : stubReply(user, promptId),
       ran: "stub",
     };
   }
@@ -277,13 +299,17 @@ export async function generateReply(
     generationConfig,
   };
 
-  const waitsMs = kind === "clarify" ? [0, 600] : [0, 1000, 2000, 4000];
   let lastError: ModelError | undefined;
 
   for (const model of geminiModels(kind)) {
-    for (let attempt = 0; attempt < waitsMs.length; attempt += 1) {
-      const waitMs = waitsMs[attempt] ?? 0;
-      if (waitMs > 0) {
+    for (let attempt = 0; ; attempt += 1) {
+      const maxAttempts =
+        lastError?.status === 429 ? 4 : kind === "clarify" ? 2 : 4;
+      if (attempt >= maxAttempts) {
+        break;
+      }
+      if (attempt > 0) {
+        const waitMs = retryWaitMs(kind, lastError?.status, attempt - 1);
         console.log(
           `[model] retry kind=${kind} model=${model} after ${lastError?.status ?? "error"} wait=${waitMs}ms`,
         );
@@ -348,6 +374,9 @@ export async function generateReply(
       }
 
       return { text, ran: "gemini" };
+    }
+    if (lastError?.status === 429) {
+      break;
     }
   }
 
