@@ -1,5 +1,7 @@
 import { prompts } from "@/config/prompts";
-import { generateReply, ModelError } from "@/lib/model";
+import { generateReply, ModelError, parseJsonObject } from "@/lib/model";
+
+export const maxDuration = 60;
 
 type ClarifyRequest = {
   promptId?: string;
@@ -45,23 +47,19 @@ Reply with JSON only, no markdown:
 revealedFactIds is the ids of facts this answer is based on. Use only ids from the list.`;
 }
 
-function parseModelJson(text: string): ClarifyResponse | null {
-  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  try {
-    const parsed = JSON.parse(trimmed) as {
-      answer?: unknown;
-      revealedFactIds?: unknown;
-    };
-    if (typeof parsed.answer !== "string") {
-      return null;
-    }
-    const ids = Array.isArray(parsed.revealedFactIds)
-      ? parsed.revealedFactIds.filter((id): id is string => typeof id === "string")
-      : [];
-    return { answer: parsed.answer, revealedFactIds: ids };
-  } catch {
+function parseClarify(text: string): ClarifyResponse | null {
+  const record = parseJsonObject(text);
+  if (!record || typeof record.answer !== "string") {
     return null;
   }
+  const ids = Array.isArray(record.revealedFactIds)
+    ? record.revealedFactIds.filter((id): id is string => typeof id === "string")
+    : [];
+  return { answer: record.answer, revealedFactIds: ids };
+}
+
+function errorResponse(error: string) {
+  return Response.json({ error });
 }
 
 export async function POST(request: Request) {
@@ -69,18 +67,18 @@ export async function POST(request: Request) {
   try {
     body = (await request.json()) as ClarifyRequest;
   } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
+    return errorResponse("Invalid JSON");
   }
 
   const question = body.question?.trim();
   if (!question) {
-    return Response.json({ error: "Question is required" }, { status: 400 });
+    return errorResponse("Question is required");
   }
 
   const prompt =
     prompts.find((item) => item.id === body.promptId) ?? prompts[0];
   if (!prompt) {
-    return Response.json({ error: "No prompt configured" }, { status: 500 });
+    return errorResponse("No prompt configured");
   }
 
   const knownIds = new Set(prompt.facts.map((fact) => fact.id));
@@ -90,17 +88,25 @@ export async function POST(request: Request) {
 
   let text: string;
   try {
-    text = await generateReply(buildSystemPrompt(prompt, alreadyRevealed), question);
+    const reply = await generateReply(
+      buildSystemPrompt(prompt, alreadyRevealed),
+      question,
+      "clarify",
+    );
+    text = reply.text;
   } catch (error) {
     if (error instanceof ModelError) {
-      return Response.json({ error: error.message }, { status: error.status });
+      console.log("[clarify] gemini failed", error.status, error.body || error.message);
+      return errorResponse(error.message);
     }
-    throw error;
+    console.log("[clarify] gemini failed", error);
+    return errorResponse("Could not get an answer");
   }
 
-  const parsed = parseModelJson(text);
+  const parsed = parseClarify(text);
   if (!parsed) {
-    return Response.json({ error: "Could not parse model response" }, { status: 502 });
+    console.log("[clarify] parse failed raw=", text.slice(0, 4000));
+    return errorResponse("Could not parse model response");
   }
 
   const revealedFactIds = parsed.revealedFactIds.filter((id) => knownIds.has(id));
