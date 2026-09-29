@@ -14,6 +14,7 @@ type EvaluateRequest = {
   revealedFactIds?: string[];
   turns?: { question?: string; answer?: string }[];
   transcript?: TranscriptLine[];
+  interviewerNotes?: TranscriptLine[];
   talkMs?: number;
   boardMs?: number;
   elapsedMs?: number;
@@ -83,7 +84,7 @@ ${prompt.context}
 Facts in the hidden brief:
 ${factList}
 
-The session JSON is ground truth for revealed fact ids, transcript timestamps, and board vs talk times. If a canvas image is attached, use it only to judge whether the board matches what they said they were doing. If audio is attached, transcribe the candidate and treat that transcription as the spoken transcript, even when the transcript array is empty.
+The session JSON is ground truth for revealed fact ids, transcript timestamps, and board vs talk times. If interviewerNotes is present, those are private timestamped observations from the interviewer, not the candidate. You may cite them by time (m:ss) when they help explain the round. If a canvas image is attached, use it only to judge whether the board matches what they said they were doing. If audio is attached, transcribe the candidate and treat that transcription as the spoken transcript, even when the transcript array is empty.
 
 Reply with JSON only, no markdown:
 {"summary":"<2 to 4 sentences>","framing":"<how they framed the problem>","boardVsTalk":"<one sentence citing the times>","rewrittenMoment":{"at":"m:ss","original":"<their words>","rewritten":"<tighter version>"},"canvasMatch":"<does the board match what they said>","factsFound":["fact text"],"factsMissed":["fact text"]}`;
@@ -114,6 +115,12 @@ export async function POST(request: Request) {
     }))
     .filter((turn) => turn.question && turn.answer);
   const transcript = (body.transcript ?? [])
+    .map((line) => ({
+      atMs: typeof line.atMs === "number" ? line.atMs : 0,
+      text: line.text?.trim() ?? "",
+    }))
+    .filter((line) => line.text);
+  const interviewerNotes = (body.interviewerNotes ?? [])
     .map((line) => ({
       atMs: typeof line.atMs === "number" ? line.atMs : 0,
       text: line.text?.trim() ?? "",
@@ -155,6 +162,7 @@ export async function POST(request: Request) {
     revealedFactIds,
     turns,
     transcript,
+    interviewerNotes,
     talkMs,
     boardMs,
     elapsedMs,

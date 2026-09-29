@@ -4,6 +4,12 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { prompts } from "@/config/prompts";
 import { formatClock, sessionConfig, sessionDurationMs } from "@/config/session";
+import SessionRoom, {
+  type CandidateStage,
+  type InterviewerNote,
+  type RailTab,
+  type Role,
+} from "@/components/SessionRoom";
 import "@excalidraw/excalidraw/index.css";
 
 const Excalidraw = dynamic(
@@ -58,6 +64,7 @@ type EvaluateBody = {
   revealedFactIds: string[];
   turns: Turn[];
   transcript: TranscriptLine[];
+  interviewerNotes: InterviewerNote[];
   talkMs: number;
   boardMs: number;
   elapsedMs: number;
@@ -459,6 +466,7 @@ function SessionReport({
   evaluation,
   error,
   transcript,
+  interviewerNotes,
   serviceLine,
   retrying,
   onRetry,
@@ -467,6 +475,7 @@ function SessionReport({
   evaluation: Evaluation | null;
   error: string | null;
   transcript: TranscriptLine[];
+  interviewerNotes: InterviewerNote[];
   serviceLine: string | null;
   retrying: boolean;
   onRetry: (() => void) | null;
@@ -534,6 +543,20 @@ function SessionReport({
             {evaluation.canvasMatch ? (
               <ReportSection title="Does the board match what you said">
                 <p>{evaluation.canvasMatch}</p>
+              </ReportSection>
+            ) : null}
+            {interviewerNotes.length > 0 ? (
+              <ReportSection title="Interviewer notes">
+                <ul className="space-y-2">
+                  {interviewerNotes.map((note, index) => (
+                    <li key={`${note.atMs}-${index}`}>
+                      <span className="tabular-nums text-neutral-400">
+                        {formatClock(note.atMs)}
+                      </span>{" "}
+                      {note.text}
+                    </li>
+                  ))}
+                </ul>
               </ReportSection>
             ) : null}
             {evaluation.factsFound.length > 0 ? (
@@ -614,6 +637,13 @@ export default function WhiteboardSession() {
   const [canRetry, setCanRetry] = useState(false);
   const evaluatePayloadRef = useRef<EvaluateBody | null>(null);
   const retryingRef = useRef(false);
+  const [role, setRole] = useState<Role>("candidate");
+  const [stage, setStage] = useState<CandidateStage>("board");
+  const [notes, setNotes] = useState("");
+  const [interviewerNotes, setInterviewerNotes] = useState<InterviewerNote[]>(
+    [],
+  );
+  const [railTab, setRailTab] = useState<RailTab>("prompt");
 
   const resetSession = useCallback(() => {
     finishingRef.current = false;
@@ -631,6 +661,11 @@ export default function WhiteboardSession() {
     setCanRetry(false);
     evaluatePayloadRef.current = null;
     retryingRef.current = false;
+    setRole("candidate");
+    setStage("board");
+    setNotes("");
+    setInterviewerNotes([]);
+    setRailTab("prompt");
   }, []);
 
   const captureBoard = useCallback(async () => {
@@ -764,6 +799,7 @@ export default function WhiteboardSession() {
       revealedFactIds,
       turns,
       transcript: transcriptRef.current,
+      interviewerNotes,
       talkMs: talkMsRef.current,
       boardMs: boardMsRef.current,
       elapsedMs: startedAtRef.current ? Date.now() - startedAtRef.current : 0,
@@ -795,7 +831,14 @@ export default function WhiteboardSession() {
     } finally {
       setStatus("report");
     }
-  }, [captureBoard, promptId, revealedFactIds, requestEvaluation, turns]);
+  }, [
+    captureBoard,
+    interviewerNotes,
+    promptId,
+    revealedFactIds,
+    requestEvaluation,
+    turns,
+  ]);
 
   const startSession = async () => {
     if (status !== "idle" || !promptId) {
@@ -828,6 +871,11 @@ export default function WhiteboardSession() {
     setEndsAt(new Date(Date.now() + sessionDurationMs).toISOString());
     setStatus("active");
     setPromptOpen(false);
+    setRole("candidate");
+    setStage("board");
+    setNotes("");
+    setInterviewerNotes([]);
+    setRailTab("prompt");
   };
 
   useEffect(() => {
@@ -1200,54 +1248,39 @@ export default function WhiteboardSession() {
 
   return (
     <div className="flex h-dvh flex-col bg-neutral-50">
+      {running ? null : (
       <header className="relative z-20 flex shrink-0 items-center gap-4 border-b border-neutral-200 bg-white px-5 py-2.5">
-        <Countdown endsAt={endsAt} running={running} onExpire={finishSession} />
-        {running && micStatus === "listening" ? (
-          <p className="shrink-0 text-xs text-neutral-500">Listening</p>
-        ) : null}
-        {running && micStatus === "blocked" ? (
-          <p className="shrink-0 text-xs text-red-700">Mic blocked</p>
-        ) : null}
-
+        <Countdown endsAt={endsAt} running={false} onExpire={finishSession} />
         <div className="relative min-w-0 flex-1">
           {headerPrompt ? (
             <>
-          <button
-            type="button"
-            aria-expanded={promptOpen}
-            onClick={() => setPromptOpen((open) => !open)}
-            className="flex w-full items-center gap-2 text-left"
-          >
-            <span className="min-w-0 flex-1 truncate text-sm leading-5 text-neutral-700">
-              {headerPrompt}
-            </span>
-            <span
-              aria-hidden="true"
-              className={`shrink-0 text-neutral-400 transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] ${
-                promptOpen ? "rotate-180" : ""
-              }`}
-            >
-              ▾
-            </span>
-          </button>
-          {promptOpen ? (
-            <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-30 rounded-lg border border-neutral-200 bg-white p-3 text-sm leading-6 text-neutral-800 shadow-[0_8px_24px_oklch(0_0_0/0.08)]">
-              {headerPrompt}
-            </div>
-          ) : null}
+              <button
+                type="button"
+                aria-expanded={promptOpen}
+                onClick={() => setPromptOpen((open) => !open)}
+                className="flex w-full items-center gap-2 text-left"
+              >
+                <span className="min-w-0 flex-1 truncate text-sm leading-5 text-neutral-700">
+                  {headerPrompt}
+                </span>
+                <span
+                  aria-hidden="true"
+                  className={`shrink-0 text-neutral-400 transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] ${
+                    promptOpen ? "rotate-180" : ""
+                  }`}
+                >
+                  ▾
+                </span>
+              </button>
+              {promptOpen ? (
+                <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-30 rounded-lg border border-neutral-200 bg-white p-3 text-sm leading-6 text-neutral-800 shadow-[0_8px_24px_oklch(0_0_0/0.08)]">
+                  {headerPrompt}
+                </div>
+              ) : null}
             </>
           ) : null}
         </div>
-
-        {running ? (
-          <button
-            type="button"
-            onClick={finishSession}
-            className="shrink-0 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm font-medium text-neutral-800 transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96]"
-          >
-            End session
-          </button>
-        ) : status === "idle" ? (
+        {status === "idle" ? (
           <button
             type="button"
             onClick={startSession}
@@ -1258,11 +1291,37 @@ export default function WhiteboardSession() {
           </button>
         ) : null}
       </header>
+      )}
 
       <main className="flex min-h-0 flex-1 flex-col">
-        {running && promptId ? (
-          <>
-            <div className="peerboard min-h-0 w-full flex-1">
+        {running && promptId && selectedPrompt ? (
+          <SessionRoom
+            role={role}
+            onRoleChange={setRole}
+            showRoleToggle={process.env.NODE_ENV === "development"}
+            stage={stage}
+            onToggleBoard={() =>
+              setStage((current) => (current === "board" ? "video" : "board"))
+            }
+            onOpenNotes={() => setStage("notes")}
+            notes={notes}
+            onNotesChange={setNotes}
+            railTab={railTab}
+            onRailTab={setRailTab}
+            prompt={selectedPrompt}
+            revealedFactIds={revealedFactIds}
+            promptOpen={promptOpen}
+            onTogglePrompt={() => setPromptOpen((open) => !open)}
+            micStatus={micStatus}
+            timer={
+              <Countdown
+                endsAt={endsAt}
+                running={running}
+                onExpire={finishSession}
+              />
+            }
+            onEnd={finishSession}
+            board={
               <Excalidraw
                 aiEnabled={false}
                 excalidrawAPI={(api) => {
@@ -1273,28 +1332,44 @@ export default function WhiteboardSession() {
                 }}
                 initialData={{ appState: { viewBackgroundColor: "#FFFFFF" } }}
               />
-            </div>
-            {turns.length > 0 ? (
-              <div className="max-h-32 shrink-0 overflow-y-auto border-t border-neutral-200 bg-white px-5 py-3">
-                {turns.map((turn, index) => (
-                  <div key={index} className="not-last:mb-3">
-                    <p className="text-sm text-neutral-500">{turn.question}</p>
-                    <p className="mt-1 text-sm leading-6 text-neutral-800">
-                      {turn.answer}
-                    </p>
+            }
+            interviewerNotes={interviewerNotes}
+            onAddInterviewerNote={(text) => {
+              setInterviewerNotes((current) => [
+                ...current,
+                {
+                  atMs: startedAtRef.current
+                    ? Date.now() - startedAtRef.current
+                    : 0,
+                  text,
+                },
+              ]);
+            }}
+            ask={
+              <>
+                {turns.length > 0 ? (
+                  <div className="max-h-32 shrink-0 overflow-y-auto border-t border-neutral-200 bg-white px-5 py-3">
+                    {turns.map((turn, index) => (
+                      <div key={index} className="not-last:mb-3">
+                        <p className="text-sm text-neutral-500">{turn.question}</p>
+                        <p className="mt-1 text-sm leading-6 text-neutral-800">
+                          {turn.answer}
+                        </p>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            ) : null}
-            <ClarifyingQuestions
-              promptId={promptId}
-              revealedFactIds={revealedFactIds}
-              onTurn={(turn, nextIds) => {
-                setTurns((current) => [...current, turn]);
-                setRevealedFactIds(nextIds);
-              }}
-            />
-          </>
+                ) : null}
+                <ClarifyingQuestions
+                  promptId={promptId}
+                  revealedFactIds={revealedFactIds}
+                  onTurn={(turn, nextIds) => {
+                    setTurns((current) => [...current, turn]);
+                    setRevealedFactIds(nextIds);
+                  }}
+                />
+              </>
+            }
+          />
         ) : status === "evaluating" ? (
           <div className="flex h-full items-center justify-center">
             <p className="text-sm text-neutral-500">Writing the session report…</p>
@@ -1304,6 +1379,7 @@ export default function WhiteboardSession() {
             evaluation={evaluation}
             error={reportError}
             transcript={heard}
+            interviewerNotes={interviewerNotes}
             serviceLine={serviceLine}
             retrying={retrying}
             onRetry={canRetry ? retryEvaluation : null}

@@ -5,6 +5,11 @@ body {
   height: 100%;
 }
 
+.peerboard {
+  height: 100%;
+  width: 100%;
+}
+
 .peerboard .excalidraw {
   /* brand */
   --color-primary: #83C4EA;
