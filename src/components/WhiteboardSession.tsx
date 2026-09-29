@@ -55,6 +55,19 @@ type RecordingPart = {
   data: string;
 };
 
+type EvaluateBody = {
+  promptId: string;
+  revealedFactIds: string[];
+  turns: Turn[];
+  transcript: TranscriptLine[];
+  talkMs: number;
+  boardMs: number;
+  elapsedMs: number;
+  snapshotCount: number;
+  lastSnapshot?: { mimeType: string; data: string };
+  recording?: RecordingPart;
+};
+
 type SpeechAlternative = {
   transcript: string;
   confidence?: number;
@@ -177,6 +190,7 @@ type TranscribeResponse = {
   segments?: TranscriptLine[];
   mode?: "groq" | "stub";
   error?: string;
+  status?: number;
 };
 
 async function transcribeBlob(blob: Blob, offsetMs: number) {
@@ -186,9 +200,58 @@ async function transcribeBlob(blob: Blob, offsetMs: number) {
   const response = await fetch("/api/transcribe", { method: "POST", body: form });
   const payload = (await response.json()) as TranscribeResponse;
   if (!response.ok) {
-    throw new Error(payload.error ?? "Transcription failed");
+    const status = payload.status ?? response.status;
+    const error = new Error(String(status)) as Error & { status: number };
+    error.status = status;
+    throw error;
   }
   return payload;
+}
+
+function failureCode(err: unknown) {
+  if (err && typeof err === "object" && "status" in err) {
+    const status = (err as { status?: unknown }).status;
+    if (typeof status === "number" && status > 0) {
+      return String(status);
+    }
+  }
+  if (err instanceof Error && /^\d{3}$/.test(err.message)) {
+    return err.message;
+  }
+  return "error";
+}
+
+function transcriptionLine(opts: {
+  groqOk: boolean;
+  chromeUsed: boolean;
+  groqError?: string;
+}) {
+  if (opts.groqOk) {
+    return "Transcription: Whisper via Groq";
+  }
+  if (opts.chromeUsed && opts.groqError) {
+    return `Transcription: Chrome speech fallback (Groq failed: ${opts.groqError})`;
+  }
+  if (opts.chromeUsed) {
+    return "Transcription: Chrome speech fallback";
+  }
+  if (opts.groqError) {
+    return `Transcription: Whisper via Groq failed: ${opts.groqError}`;
+  }
+  return "Transcription: none";
+}
+
+function evaluationLine(ran?: string, error?: string) {
+  if (ran === "gemini" && error) {
+    return `Evaluation: Gemini failed: ${error}`;
+  }
+  if (ran === "gemini") {
+    return "Evaluation: Gemini";
+  }
+  if (ran === "stub") {
+    return "Evaluation: stub";
+  }
+  return "Evaluation: unknown";
 }
 
 function recordingToBlob(recording: RecordingPart) {
@@ -275,13 +338,20 @@ function ClarifyingQuestions({
           revealedFactIds,
         }),
       });
-      const payload = (await response.json()) as {
+      let payload: {
         answer?: string;
         revealedFactIds?: string[];
         error?: string;
-      };
-      if (!response.ok || !payload.answer) {
-        throw new Error(payload.error ?? "Could not get an answer");
+      } = {};
+      try {
+        payload = (await response.json()) as typeof payload;
+      } catch {
+        setError(`Could not get an answer${response.status ? ` (${response.status})` : ""}`);
+        return;
+      }
+      if (!payload.answer) {
+        setError(payload.error ?? "Could not get an answer");
+        return;
       }
 
       const nextIds = new Set(revealedFactIds);
@@ -300,9 +370,12 @@ function ClarifyingQuestions({
   return (
     <form
       onSubmit={submit}
-      className="flex shrink-0 items-center gap-3 border-t border-neutral-200 bg-white px-5 py-2.5"
+      className="flex shrink-0 flex-col border-t border-neutral-200 bg-white"
     >
-      {error ? <p className="shrink-0 text-sm text-red-700">{error}</p> : null}
+      {error ? (
+        <p className="px-5 pt-2.5 text-sm leading-6 text-red-700">{error}</p>
+      ) : null}
+      <div className="flex items-center gap-3 px-5 py-2.5">
       <input
         type="text"
         value={question}
@@ -318,6 +391,7 @@ function ClarifyingQuestions({
       >
         {pending ? "Asking…" : "Ask"}
       </button>
+      </div>
     </form>
   );
 }
@@ -341,11 +415,17 @@ function SessionReport({
   evaluation,
   error,
   transcript,
+  serviceLine,
+  retrying,
+  onRetry,
   onRestart,
 }: {
   evaluation: Evaluation | null;
   error: string | null;
   transcript: TranscriptLine[];
+  serviceLine: string | null;
+  retrying: boolean;
+  onRetry: (() => void) | null;
   onRestart: () => void;
 }) {
   return (
@@ -354,6 +434,9 @@ function SessionReport({
         <h1 className="text-xl font-medium tracking-tight text-neutral-900">
           Session report
         </h1>
+        {serviceLine ? (
+          <p className="mt-2 text-xs text-neutral-400">{serviceLine}</p>
+        ) : null}
         {error ? <p className="mt-4 text-sm text-red-700">{error}</p> : null}
         {evaluation ? (
           <>
@@ -429,13 +512,26 @@ function SessionReport({
             ) : null}
           </>
         ) : null}
-        <button
-          type="button"
-          onClick={onRestart}
-          className="mt-10 rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96]"
-        >
-          Start another session
-        </button>
+        <div className="mt-10 flex flex-wrap items-center gap-3">
+          {onRetry ? (
+            <button
+              type="button"
+              onClick={onRetry}
+              disabled={retrying}
+              className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm font-medium text-neutral-800 transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {retrying ? "Retrying…" : "Retry evaluation"}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={onRestart}
+            disabled={retrying}
+            className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Start another session
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -462,9 +558,17 @@ export default function WhiteboardSession() {
   const stopMicRef = useRef<StopMic>(async () => undefined);
   const pendingStreamRef = useRef<MediaStream | null>(null);
   const groqAvailableRef = useRef(false);
+  const groqOkRef = useRef(false);
+  const chromeUsedRef = useRef(false);
+  const groqErrorRef = useRef<string | undefined>(undefined);
   const liveTranscribeRef = useRef(Promise.resolve());
   const [micStatus, setMicStatus] = useState<MicStatus>("off");
   const [heard, setHeard] = useState<TranscriptLine[]>([]);
+  const [serviceLine, setServiceLine] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const [canRetry, setCanRetry] = useState(false);
+  const evaluatePayloadRef = useRef<EvaluateBody | null>(null);
+  const retryingRef = useRef(false);
 
   const resetSession = useCallback(() => {
     finishingRef.current = false;
@@ -477,6 +581,11 @@ export default function WhiteboardSession() {
     setReportError(null);
     setMicStatus("off");
     setHeard([]);
+    setServiceLine(null);
+    setRetrying(false);
+    setCanRetry(false);
+    evaluatePayloadRef.current = null;
+    retryingRef.current = false;
   }, []);
 
   const captureBoard = useCallback(async () => {
@@ -508,6 +617,55 @@ export default function WhiteboardSession() {
     }
   }, []);
 
+  const requestEvaluation = useCallback(async (body: EvaluateBody) => {
+    const response = await fetch("/api/evaluate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = (await response.json()) as Evaluation & {
+      error?: string;
+      services?: { evaluation?: { ran?: string; error?: string } };
+    };
+    const evalNote = evaluationLine(
+      payload.services?.evaluation?.ran,
+      payload.services?.evaluation?.error,
+    );
+    setServiceLine(
+      `${transcriptionLine({
+        groqOk: groqOkRef.current,
+        chromeUsed: chromeUsedRef.current,
+        groqError: groqErrorRef.current,
+      })} · ${evalNote}`,
+    );
+    if (payload.summary) {
+      setEvaluation(payload);
+      setReportError(null);
+      return;
+    }
+    throw new Error(payload.error ?? "Could not write the report");
+  }, []);
+
+  const retryEvaluation = useCallback(async () => {
+    const body = evaluatePayloadRef.current;
+    if (!body || retryingRef.current) {
+      return;
+    }
+    retryingRef.current = true;
+    setRetrying(true);
+    setReportError(null);
+    try {
+      await requestEvaluation(body);
+    } catch (err) {
+      setReportError(
+        err instanceof Error ? err.message : "Could not write the report",
+      );
+    } finally {
+      retryingRef.current = false;
+      setRetrying(false);
+    }
+  }, [requestEvaluation]);
+
   const finishSession = useCallback(async () => {
     if (finishingRef.current) {
       return;
@@ -520,6 +678,7 @@ export default function WhiteboardSession() {
       try {
         const finalPass = await transcribeBlob(recordingToBlob(recording), 0);
         if (finalPass.mode === "groq") {
+          groqOkRef.current = true;
           const lines = finalPass.segments?.filter((line) => line.text) ?? [];
           transcriptRef.current =
             lines.length > 0
@@ -528,8 +687,8 @@ export default function WhiteboardSession() {
                 ? [{ atMs: 0, text: finalPass.text }]
                 : transcriptRef.current;
         }
-      } catch {
-        // Keep the live slices if the full pass fails.
+      } catch (err) {
+        groqErrorRef.current = failureCode(err);
       }
     }
     const heardLines = [...transcriptRef.current];
@@ -552,39 +711,43 @@ export default function WhiteboardSession() {
       0,
     );
 
+    const evaluateBody: EvaluateBody = {
+      promptId: activePrompt.id,
+      revealedFactIds,
+      turns,
+      transcript: transcriptRef.current,
+      talkMs: talkMsRef.current,
+      boardMs: boardMsRef.current,
+      elapsedMs: startedAtRef.current ? Date.now() - startedAtRef.current : 0,
+      snapshotCount: snapshotsRef.current.length,
+      lastSnapshot,
+      recording:
+        groqAvailableRef.current || spokenChars >= 80
+          ? undefined
+          : recording,
+    };
+    evaluatePayloadRef.current = evaluateBody;
+    setCanRetry(true);
+
     try {
-      const response = await fetch("/api/evaluate", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          promptId: activePrompt.id,
-          revealedFactIds,
-          turns,
-          transcript: transcriptRef.current,
-          talkMs: talkMsRef.current,
-          boardMs: boardMsRef.current,
-          elapsedMs: startedAtRef.current ? Date.now() - startedAtRef.current : 0,
-          snapshotCount: snapshotsRef.current.length,
-          lastSnapshot,
-          recording:
-            groqAvailableRef.current || spokenChars >= 80
-              ? undefined
-              : recording,
-        }),
-      });
-      const payload = (await response.json()) as Evaluation & { error?: string };
-      if (!response.ok || !payload.summary) {
-        throw new Error(payload.error ?? "Could not write the report");
-      }
-      setEvaluation(payload);
+      await requestEvaluation(evaluateBody);
     } catch (err) {
+      setServiceLine(
+        (current) =>
+          current ??
+          `${transcriptionLine({
+            groqOk: groqOkRef.current,
+            chromeUsed: chromeUsedRef.current,
+            groqError: groqErrorRef.current,
+          })} · Evaluation: unknown`,
+      );
       setReportError(
         err instanceof Error ? err.message : "Could not write the report",
       );
     } finally {
       setStatus("report");
     }
-  }, [captureBoard, revealedFactIds, turns]);
+  }, [captureBoard, revealedFactIds, requestEvaluation, turns]);
 
   const startSession = async () => {
     if (status !== "idle") {
@@ -596,7 +759,15 @@ export default function WhiteboardSession() {
     setEvaluation(null);
     setReportError(null);
     setHeard([]);
+    setServiceLine(null);
+    setRetrying(false);
+    setCanRetry(false);
+    evaluatePayloadRef.current = null;
+    retryingRef.current = false;
     setMicStatus("off");
+    groqOkRef.current = false;
+    chromeUsedRef.current = false;
+    groqErrorRef.current = undefined;
     pendingStreamRef.current?.getTracks().forEach((track) => track.stop());
     pendingStreamRef.current = null;
     try {
@@ -624,6 +795,9 @@ export default function WhiteboardSession() {
     speakingRef.current = false;
     lastDrawRef.current = 0;
     listeningRef.current = true;
+    groqOkRef.current = false;
+    chromeUsedRef.current = false;
+    groqErrorRef.current = undefined;
 
     let stopped = false;
     let settled = false;
@@ -789,6 +963,7 @@ export default function WhiteboardSession() {
       };
       try {
         rec.start();
+        chromeUsedRef.current = true;
       } catch {
         speechRestartTimer = window.setTimeout(() => {
           startSpeech();
@@ -922,6 +1097,9 @@ export default function WhiteboardSession() {
                 liveTranscribeRef.current = liveTranscribeRef.current
                   .then(async () => {
                     const result = await transcribeBlob(blob, offsetMs);
+                    if (result.mode === "groq") {
+                      groqOkRef.current = true;
+                    }
                     if (result.mode !== "groq" || stopped) {
                       return;
                     }
@@ -931,7 +1109,9 @@ export default function WhiteboardSession() {
                       }
                     }
                   })
-                  .catch(() => undefined);
+                  .catch((err) => {
+                    groqErrorRef.current = failureCode(err);
+                  });
               }
               if (!stopped && listeningRef.current) {
                 startSlice();
@@ -1069,6 +1249,9 @@ export default function WhiteboardSession() {
             evaluation={evaluation}
             error={reportError}
             transcript={heard}
+            serviceLine={serviceLine}
+            retrying={retrying}
+            onRetry={canRetry ? retryEvaluation : null}
             onRestart={resetSession}
           />
         ) : (

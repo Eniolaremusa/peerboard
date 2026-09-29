@@ -1,4 +1,4 @@
-import { groqConfigured, transcribeAudio } from "@/lib/transcribe";
+import { groqConfigured, transcribeAudio, TranscribeError } from "@/lib/transcribe";
 
 export const maxDuration = 60;
 
@@ -31,6 +31,12 @@ export async function POST(request: Request) {
     });
     return Response.json(result);
   } catch (error) {
+    if (error instanceof TranscribeError) {
+      return Response.json(
+        { error: error.message, status: error.status },
+        { status: error.status },
+      );
+    }
     const message =
       error instanceof Error ? error.message : "Transcription failed";
     return Response.json({ error: message }, { status: 502 });

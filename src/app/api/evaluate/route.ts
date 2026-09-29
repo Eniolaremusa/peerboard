@@ -1,8 +1,8 @@
 import { prompts } from "@/config/prompts";
 import { rubric } from "@/config/rubric";
-import { generateReply, ModelError } from "@/lib/model";
+import { generateReply, ModelError, modelFailureReason, parseJsonObject, stubEvaluate } from "@/lib/model";
 
-export const maxDuration = 60;
+export const maxDuration = 90;
 
 type TranscriptLine = {
   atMs?: number;
@@ -39,41 +39,30 @@ function asStringArray(value: unknown) {
 }
 
 function parseWritten(text: string): WrittenEvaluation | null {
-  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  try {
-    const parsed = JSON.parse(trimmed) as {
-      summary?: unknown;
-      framing?: unknown;
-      boardVsTalk?: unknown;
-      rewrittenMoment?: {
+  const record = parseJsonObject(text);
+  if (!record || typeof record.summary !== "string") {
+    return null;
+  }
+  const moment = record.rewrittenMoment as
+    | {
         at?: unknown;
         original?: unknown;
         rewritten?: unknown;
-      };
-      canvasMatch?: unknown;
-      factsFound?: unknown;
-      factsMissed?: unknown;
-    };
-    if (typeof parsed.summary !== "string") {
-      return null;
-    }
-    const moment = parsed.rewrittenMoment;
-    return {
-      summary: parsed.summary,
-      framing: typeof parsed.framing === "string" ? parsed.framing : "",
-      boardVsTalk: typeof parsed.boardVsTalk === "string" ? parsed.boardVsTalk : "",
-      rewrittenMoment: {
-        at: typeof moment?.at === "string" ? moment.at : "0:00",
-        original: typeof moment?.original === "string" ? moment.original : "",
-        rewritten: typeof moment?.rewritten === "string" ? moment.rewritten : "",
-      },
-      canvasMatch: typeof parsed.canvasMatch === "string" ? parsed.canvasMatch : "",
-      factsFound: asStringArray(parsed.factsFound),
-      factsMissed: asStringArray(parsed.factsMissed),
-    };
-  } catch {
-    return null;
-  }
+      }
+    | undefined;
+  return {
+    summary: record.summary,
+    framing: typeof record.framing === "string" ? record.framing : "",
+    boardVsTalk: typeof record.boardVsTalk === "string" ? record.boardVsTalk : "",
+    rewrittenMoment: {
+      at: typeof moment?.at === "string" ? moment.at : "0:00",
+      original: typeof moment?.original === "string" ? moment.original : "",
+      rewritten: typeof moment?.rewritten === "string" ? moment.rewritten : "",
+    },
+    canvasMatch: typeof record.canvasMatch === "string" ? record.canvasMatch : "",
+    factsFound: asStringArray(record.factsFound),
+    factsMissed: asStringArray(record.factsMissed),
+  };
 }
 
 function buildSystemPrompt(prompt: (typeof prompts)[number]) {
@@ -175,24 +164,45 @@ export async function POST(request: Request) {
     coverage,
   };
 
+  const sessionJson = JSON.stringify(payload);
+
   let text: string;
+  let ran: "gemini" | "stub" = "stub";
+  let evalError: string | undefined;
   try {
-    text = await generateReply(
+    const reply = await generateReply(
       buildSystemPrompt(prompt),
-      JSON.stringify(payload),
+      sessionJson,
       "evaluate",
       media,
     );
+    text = reply.text;
+    ran = reply.ran;
   } catch (error) {
     if (error instanceof ModelError) {
-      return Response.json({ error: error.message }, { status: error.status });
+      const why = modelFailureReason(error);
+      console.log("[evaluate] gemini request failed", error.status, error.body || error.message);
+      evalError = String(error.status);
+      text = stubEvaluate(sessionJson, why);
+      ran = "stub";
+    } else {
+      throw error;
     }
-    throw error;
   }
 
-  const written = parseWritten(text);
+  let written = parseWritten(text);
   if (!written) {
-    return Response.json({ error: "Could not parse model response" }, { status: 502 });
+    console.log(
+      "[evaluate] parse failed raw=",
+      text.slice(0, 4000),
+    );
+    evalError = evalError ?? "bad JSON";
+    written = parseWritten(stubEvaluate(sessionJson, "the model returned unreadable JSON"));
+    ran = "stub";
+  }
+
+  if (!written) {
+    return Response.json({ error: "Could not build a report" }, { status: 500 });
   }
 
   return Response.json({
@@ -204,5 +214,8 @@ export async function POST(request: Request) {
     coverage,
     factsFound: coverage.found.map((item) => item.fact),
     factsMissed: coverage.missed.map((item) => item.fact),
+    services: {
+      evaluation: evalError ? { ran: "gemini" as const, error: evalError } : { ran },
+    },
   });
 }

@@ -15,6 +15,16 @@ export type TranscribeResult = {
   mode: "groq" | "stub";
 };
 
+export class TranscribeError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "TranscribeError";
+    this.status = status;
+  }
+}
+
 export function groqConfigured() {
   return Boolean(process.env.GROQ_API_KEY?.trim());
 }
@@ -68,8 +78,7 @@ export async function transcribeAudio({
   });
 
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`Transcription failed: ${detail}`);
+    throw new TranscribeError(`Groq failed: ${response.status}`, response.status);
   }
 
   const payload = (await response.json()) as {
