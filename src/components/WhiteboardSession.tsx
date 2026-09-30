@@ -1,15 +1,20 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { prompts } from "@/config/prompts";
-import { formatClock, sessionConfig, sessionDurationMs } from "@/config/session";
+import { sessionConfig, sessionDurationMs } from "@/config/session";
 import SessionRoom, {
   type CandidateStage,
   type InterviewerNote,
   type RailTab,
   type Role,
 } from "@/components/SessionRoom";
+import SessionReport, {
+  evaluationLine,
+  type Evaluation,
+  type TranscriptLine,
+} from "@/components/SessionReport";
 import "@excalidraw/excalidraw/index.css";
 
 const Excalidraw = dynamic(
@@ -22,28 +27,6 @@ type SessionStatus = "idle" | "active" | "evaluating" | "report";
 type Turn = {
   question: string;
   answer: string;
-};
-
-type TranscriptLine = {
-  atMs: number;
-  text: string;
-};
-
-type Evaluation = {
-  summary: string;
-  framing: string;
-  boardVsTalk: string;
-  rewrittenMoment: { at: string; original: string; rewritten: string };
-  canvasMatch: string;
-  factsFound: string[];
-  factsMissed: string[];
-  coverage: {
-    revealedCount: number;
-    totalCount: number;
-    criticalRevealedCount: number;
-    criticalTotal: number;
-    missedCritical: { fact: string }[];
-  };
 };
 
 type BoardApi = {
@@ -202,6 +185,7 @@ async function transcribeBlob(blob: Blob, offsetMs: number) {
   const form = new FormData();
   form.append("file", blob, blob.type.includes("mp4") ? "audio.mp4" : "audio.webm");
   form.append("offsetMs", String(offsetMs));
+  form.append("capture", "getUserMedia");
   const response = await fetch("/api/transcribe", { method: "POST", body: form });
   const payload = (await response.json()) as TranscribeResponse;
   if (!response.ok) {
@@ -244,19 +228,6 @@ function transcriptionLine(opts: {
     return `Transcription: Whisper via Groq failed: ${opts.groqError}`;
   }
   return "Transcription: none";
-}
-
-function evaluationLine(ran?: string, error?: string) {
-  if (ran === "gemini" && error) {
-    return `Evaluation: Gemini failed: ${error}`;
-  }
-  if (ran === "gemini") {
-    return "Evaluation: Gemini";
-  }
-  if (ran === "stub") {
-    return "Evaluation: stub";
-  }
-  return "Evaluation: unknown";
 }
 
 function recordingToBlob(recording: RecordingPart) {
@@ -315,9 +286,17 @@ function Countdown({
 function PromptPicker({
   selectedId,
   onSelect,
+  onPracticeSolo,
+  onCreateRoom,
+  creatingRole,
+  roomError,
 }: {
   selectedId: string | null;
   onSelect: (id: string) => void;
+  onPracticeSolo: () => void;
+  onCreateRoom: (role: Role) => void;
+  creatingRole: Role | null;
+  roomError: string | null;
 }) {
   return (
     <div className="flex h-full justify-center overflow-y-auto px-8 py-10">
@@ -351,6 +330,54 @@ function PromptPicker({
             );
           })}
         </ul>
+        <div className="mt-10">
+          <h2 className="text-sm font-medium text-neutral-900">Practice solo</h2>
+          <p className="mt-1 text-sm leading-6 text-neutral-500">
+            The model holds the brief and answers your questions.
+          </p>
+          <button
+            type="button"
+            onClick={onPracticeSolo}
+            disabled={!selectedId || creatingRole !== null}
+            className="mt-3 rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Start solo session
+          </button>
+        </div>
+        <div className="mt-8">
+          <h2 className="text-sm font-medium text-neutral-900">
+            Practice with a peer
+          </h2>
+          <p className="mt-1 text-sm leading-6 text-neutral-500">
+            Create a room and send the link. You pick a seat; they get the
+            other. If you already have a link, open it.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onCreateRoom("interviewer")}
+              disabled={!selectedId || creatingRole !== null}
+              className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm font-medium text-neutral-800 transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {creatingRole === "interviewer"
+                ? "Creating…"
+                : "Create as interviewer"}
+            </button>
+            <button
+              type="button"
+              onClick={() => onCreateRoom("candidate")}
+              disabled={!selectedId || creatingRole !== null}
+              className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm font-medium text-neutral-800 transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {creatingRole === "candidate"
+                ? "Creating…"
+                : "Create as candidate"}
+            </button>
+          </div>
+          {roomError ? (
+            <p className="mt-3 text-sm text-red-700">{roomError}</p>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -447,163 +474,6 @@ function ClarifyingQuestions({
   );
 }
 
-function ReportSection({
-  title,
-  children,
-}: {
-  title: string;
-  children: ReactNode;
-}) {
-  return (
-    <section className="mt-8">
-      <h2 className="text-sm font-medium text-neutral-900">{title}</h2>
-      <div className="mt-2 text-sm leading-6 text-neutral-700">{children}</div>
-    </section>
-  );
-}
-
-function SessionReport({
-  evaluation,
-  error,
-  transcript,
-  interviewerNotes,
-  serviceLine,
-  retrying,
-  onRetry,
-  onRestart,
-}: {
-  evaluation: Evaluation | null;
-  error: string | null;
-  transcript: TranscriptLine[];
-  interviewerNotes: InterviewerNote[];
-  serviceLine: string | null;
-  retrying: boolean;
-  onRetry: (() => void) | null;
-  onRestart: () => void;
-}) {
-  return (
-    <div className="flex h-full justify-center overflow-y-auto px-8 py-10">
-      <div className="w-full max-w-2xl">
-        <h1 className="text-xl font-medium tracking-tight text-neutral-900">
-          Session report
-        </h1>
-        {serviceLine ? (
-          <p className="mt-2 text-xs text-neutral-400">{serviceLine}</p>
-        ) : null}
-        {error ? <p className="mt-4 text-sm text-red-700">{error}</p> : null}
-        {evaluation ? (
-          <>
-            <p className="mt-2 text-sm tabular-nums text-neutral-500">
-              {evaluation.coverage.revealedCount} of {evaluation.coverage.totalCount}{" "}
-              facts · {evaluation.coverage.criticalRevealedCount} of{" "}
-              {evaluation.coverage.criticalTotal} critical
-            </p>
-            <p className="mt-5 text-sm leading-6 text-pretty text-neutral-800">
-              {evaluation.summary}
-            </p>
-            {evaluation.framing ? (
-              <ReportSection title="How you framed the problem">
-                <p>{evaluation.framing}</p>
-              </ReportSection>
-            ) : null}
-            {evaluation.boardVsTalk ? (
-              <ReportSection title="Board versus talking">
-                <p className="tabular-nums">{evaluation.boardVsTalk}</p>
-              </ReportSection>
-            ) : null}
-            {transcript.length > 0 ? (
-              <ReportSection title={`What we heard (${transcript.length})`}>
-                <ul className="space-y-2">
-                  {transcript.map((line, index) => (
-                    <li key={`${line.atMs}-${index}`}>
-                      <span className="tabular-nums text-neutral-400">
-                        {formatClock(line.atMs)}
-                      </span>{" "}
-                      {line.text}
-                    </li>
-                  ))}
-                </ul>
-              </ReportSection>
-            ) : (
-              <ReportSection title="What we heard">
-                <p>Nothing was transcribed this round.</p>
-              </ReportSection>
-            )}
-            {evaluation.rewrittenMoment.rewritten ? (
-              <ReportSection title="One rewritten moment">
-                {evaluation.rewrittenMoment.original ? (
-                  <p className="text-neutral-500">
-                    At {evaluation.rewrittenMoment.at}: “
-                    {evaluation.rewrittenMoment.original}”
-                  </p>
-                ) : null}
-                <p className="mt-2">{evaluation.rewrittenMoment.rewritten}</p>
-              </ReportSection>
-            ) : null}
-            {evaluation.canvasMatch ? (
-              <ReportSection title="Does the board match what you said">
-                <p>{evaluation.canvasMatch}</p>
-              </ReportSection>
-            ) : null}
-            {interviewerNotes.length > 0 ? (
-              <ReportSection title="Interviewer notes">
-                <ul className="space-y-2">
-                  {interviewerNotes.map((note, index) => (
-                    <li key={`${note.atMs}-${index}`}>
-                      <span className="tabular-nums text-neutral-400">
-                        {formatClock(note.atMs)}
-                      </span>{" "}
-                      {note.text}
-                    </li>
-                  ))}
-                </ul>
-              </ReportSection>
-            ) : null}
-            {evaluation.factsFound.length > 0 ? (
-              <ReportSection title="Facts you found">
-                <ul className="list-disc space-y-1 pl-5">
-                  {evaluation.factsFound.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </ReportSection>
-            ) : null}
-            {evaluation.factsMissed.length > 0 ? (
-              <ReportSection title="Facts you missed">
-                <ul className="list-disc space-y-1 pl-5">
-                  {evaluation.factsMissed.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </ReportSection>
-            ) : null}
-          </>
-        ) : null}
-        <div className="mt-10 flex flex-wrap items-center gap-3">
-          {onRetry ? (
-            <button
-              type="button"
-              onClick={onRetry}
-              disabled={retrying}
-              className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm font-medium text-neutral-800 transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {retrying ? "Retrying…" : "Retry evaluation"}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={onRestart}
-            disabled={retrying}
-            className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Start another session
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function WhiteboardSession() {
   const [status, setStatus] = useState<SessionStatus>("idle");
   const [promptId, setPromptId] = useState<string | null>(null);
@@ -644,6 +514,8 @@ export default function WhiteboardSession() {
     [],
   );
   const [railTab, setRailTab] = useState<RailTab>("prompt");
+  const [creatingRole, setCreatingRole] = useState<Role | null>(null);
+  const [roomError, setRoomError] = useState<string | null>(null);
 
   const resetSession = useCallback(() => {
     finishingRef.current = false;
@@ -666,6 +538,8 @@ export default function WhiteboardSession() {
     setNotes("");
     setInterviewerNotes([]);
     setRailTab("prompt");
+    setCreatingRole(null);
+    setRoomError(null);
   }, []);
 
   const captureBoard = useCallback(async () => {
@@ -878,6 +752,35 @@ export default function WhiteboardSession() {
     setRailTab("prompt");
   };
 
+  const createRoom = async (role: Role) => {
+    if (status !== "idle" || !promptId || creatingRole) {
+      return;
+    }
+    setCreatingRole(role);
+    setRoomError(null);
+    try {
+      const response = await fetch("/api/livekit/token", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "create", promptId, role }),
+      });
+      const payload = (await response.json()) as {
+        roomId?: string;
+        role?: Role;
+        error?: string;
+      };
+      if (!payload.roomId || !payload.role) {
+        throw new Error(payload.error ?? "Could not create a room");
+      }
+      window.location.assign(`/room/${payload.roomId}?role=${payload.role}`);
+    } catch (err) {
+      setRoomError(
+        err instanceof Error ? err.message : "Could not create a room",
+      );
+      setCreatingRole(null);
+    }
+  };
+
   useEffect(() => {
     if (status !== "active") {
       return;
@@ -894,6 +797,7 @@ export default function WhiteboardSession() {
     groqOkRef.current = false;
     chromeUsedRef.current = false;
     groqErrorRef.current = undefined;
+    console.log("[transcribe] capture=getUserMedia");
 
     let stopped = false;
     let settled = false;
@@ -1067,7 +971,9 @@ export default function WhiteboardSession() {
       }
     };
 
-    const groqReady = fetch("/api/transcribe")
+    const groqReady = fetch("/api/transcribe?capture=getUserMedia", {
+      cache: "no-store",
+    })
       .then(async (response) => {
         const payload = (await response.json()) as { available?: boolean };
         groqAvailableRef.current = Boolean(payload.available);
@@ -1244,55 +1150,9 @@ export default function WhiteboardSession() {
 
   const running = status === "active";
   const selectedPrompt = prompts.find((item) => item.id === promptId);
-  const headerPrompt = selectedPrompt?.brief ?? "";
 
   return (
     <div className="flex h-dvh flex-col bg-neutral-50">
-      {running ? null : (
-      <header className="relative z-20 flex shrink-0 items-center gap-4 border-b border-neutral-200 bg-white px-5 py-2.5">
-        <Countdown endsAt={endsAt} running={false} onExpire={finishSession} />
-        <div className="relative min-w-0 flex-1">
-          {headerPrompt ? (
-            <>
-              <button
-                type="button"
-                aria-expanded={promptOpen}
-                onClick={() => setPromptOpen((open) => !open)}
-                className="flex w-full items-center gap-2 text-left"
-              >
-                <span className="min-w-0 flex-1 truncate text-sm leading-5 text-neutral-700">
-                  {headerPrompt}
-                </span>
-                <span
-                  aria-hidden="true"
-                  className={`shrink-0 text-neutral-400 transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] ${
-                    promptOpen ? "rotate-180" : ""
-                  }`}
-                >
-                  ▾
-                </span>
-              </button>
-              {promptOpen ? (
-                <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-30 rounded-lg border border-neutral-200 bg-white p-3 text-sm leading-6 text-neutral-800 shadow-[0_8px_24px_oklch(0_0_0/0.08)]">
-                  {headerPrompt}
-                </div>
-              ) : null}
-            </>
-          ) : null}
-        </div>
-        {status === "idle" ? (
-          <button
-            type="button"
-            onClick={startSession}
-            disabled={!promptId}
-            className="shrink-0 rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Start session
-          </button>
-        ) : null}
-      </header>
-      )}
-
       <main className="flex min-h-0 flex-1 flex-col">
         {running && promptId && selectedPrompt ? (
           <SessionRoom
@@ -1386,7 +1246,14 @@ export default function WhiteboardSession() {
             onRestart={resetSession}
           />
         ) : (
-          <PromptPicker selectedId={promptId} onSelect={setPromptId} />
+          <PromptPicker
+            selectedId={promptId}
+            onSelect={setPromptId}
+            onPracticeSolo={startSession}
+            onCreateRoom={createRoom}
+            creatingRole={creatingRole}
+            roomError={roomError}
+          />
         )}
       </main>
     </div>
