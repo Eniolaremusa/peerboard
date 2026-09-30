@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { type Prompt } from "@/config/prompts";
 import { formatClock } from "@/config/session";
+import { type Role } from "@/lib/room";
 
-export type Role = "candidate" | "interviewer";
+export type { Role };
 export type CandidateStage = "board" | "video" | "notes";
 export type RailTab = "prompt" | "notes" | "evaluation";
 export type InterviewerNote = { atMs: number; text: string };
@@ -28,9 +29,14 @@ type SessionRoomProps = {
   timer: ReactNode;
   onEnd: () => void;
   board: ReactNode;
-  ask: ReactNode;
+  ask?: ReactNode;
   interviewerNotes: InterviewerNote[];
   onAddInterviewerNote: (text: string) => void;
+  video?: ReactNode;
+  tiles?: ReactNode;
+  share?: ReactNode;
+  endControl?: ReactNode;
+  highlightedFactId?: string | null;
 };
 
 function VideoPlaceholder({ label }: { label?: string }) {
@@ -101,12 +107,28 @@ export default function SessionRoom({
   ask,
   interviewerNotes,
   onAddInterviewerNote,
+  video,
+  tiles,
+  share,
+  endControl,
+  highlightedFactId = null,
 }: SessionRoomProps) {
   const revealed = new Set(revealedFactIds);
   const showBoard = role === "interviewer" || stage === "board";
   const showNotes = role === "candidate" && stage === "notes";
   const showFullVideo = role === "candidate" && stage === "video";
-  const showTiles = role === "candidate" && stage !== "video";
+  const showTiles =
+    (role === "interviewer" && tiles != null) ||
+    (role === "candidate" && stage !== "video");
+
+  useEffect(() => {
+    if (!highlightedFactId) {
+      return;
+    }
+    document
+      .getElementById(`fact-${highlightedFactId}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [highlightedFactId]);
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col bg-neutral-50">
@@ -143,6 +165,7 @@ export default function SessionRoom({
             </div>
           ) : null}
         </div>
+        {share}
         {showRoleToggle ? (
           <div className="flex shrink-0 rounded-md border border-neutral-200 bg-white p-0.5">
             <button
@@ -171,13 +194,15 @@ export default function SessionRoom({
             </button>
           </div>
         ) : null}
-        <button
-          type="button"
-          onClick={onEnd}
-          className="shrink-0 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm font-medium text-neutral-800 transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96]"
-        >
-          End session
-        </button>
+        {endControl ?? (
+          <button
+            type="button"
+            onClick={onEnd}
+            className="shrink-0 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm font-medium text-neutral-800 transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.96]"
+          >
+            End session
+          </button>
+        )}
       </div>
 
       <div
@@ -198,7 +223,7 @@ export default function SessionRoom({
             </div>
             {showFullVideo ? (
               <div className="absolute inset-0 z-10">
-                <VideoPlaceholder />
+                {video ?? <VideoPlaceholder />}
               </div>
             ) : null}
             {showNotes ? (
@@ -209,9 +234,9 @@ export default function SessionRoom({
                 className="absolute inset-0 z-10 resize-none bg-white p-5 text-sm leading-6 text-neutral-800 outline-none"
               />
             ) : null}
-            {showTiles ? <VideoTiles /> : null}
+            {showTiles ? tiles ?? <VideoTiles /> : null}
           </div>
-          {role === "candidate" ? ask : null}
+          {role === "candidate" && ask ? ask : null}
           {role === "candidate" ? (
             <div className="flex shrink-0 justify-center gap-3 bg-white px-5 py-3">
               <StageCard
@@ -260,8 +285,18 @@ export default function SessionRoom({
                 <ul className="mt-2 space-y-3">
                   {prompt.facts.map((fact) => {
                     const isRevealed = revealed.has(fact.id);
+                    const isHighlighted = highlightedFactId === fact.id;
                     return (
-                      <li key={fact.id}>
+                      <li
+                        key={fact.id}
+                        id={`fact-${fact.id}`}
+                        data-fact-id={fact.id}
+                        className={`scroll-mt-2 ${
+                          isHighlighted
+                            ? "-mx-2 rounded-md bg-neutral-100 px-2 py-1"
+                            : ""
+                        }`}
+                      >
                         <p className="text-xs text-neutral-500">
                           {isRevealed ? "Revealed" : "Not yet asked"}
                         </p>
